@@ -1,0 +1,13 @@
+<!doctype html>
+
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf }}"><title>Rose Sale · Cashier</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head>
+
+<body data-student-id="{{ current_user.username if current_user.is_authenticated else '' }}" data-installation="{{ installation }}" data-user="{{ current_user.get_id() if current_user.is_authenticated else '' }}" data-role="{{ current_user.role if current_user.is_authenticated else '' }}">
+
+<header><a class="brand" href="/">✿ <strong>Rose Sale</strong><span>Cashier desk</span></a>{% if current_user.is_authenticated %}<div class="identity"><span>{{ current_user.username }}</span><form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="header-button">Sign out</button></form></div>{% endif %}</header>
+
+{% if config.PUBLIC_DEMO %}<div class="demo-banner" role="note">Sample only · Sign in with student ID 256298 · Data is temporary and may reset. Do not enter real payments or personal details.</div>{% endif %}
+
+{% block content %}{% endblock %}
+
+<script src="{{ url_for('static', filename='app.js') }}" defer></script></body></html>

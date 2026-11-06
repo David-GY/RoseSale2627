@@ -1,0 +1,3 @@
+{% extends 'base.html' %}{% block content %}
+<main class="login panel"><span class="flower" aria-hidden="true">✿</span><h1>Welcome to the desk</h1><p>Enter your registered student ID to open the cashier desk.</p>{% if error %}<p role="alert" class="error">{{ error }}</p>{% endif %}<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Student ID number<input name="student_id" inputmode="numeric" pattern="[0-9]{1,20}" maxlength="20" autocomplete="username" placeholder="e.g. 256298" required autofocus></label><button class="primary wide">Sign in</button></form><p class="muted">Rose Sale · Internal event cashier</p></main>
+{% endblock %}
