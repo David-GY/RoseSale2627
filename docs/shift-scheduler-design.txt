@@ -1,0 +1,584 @@
+Rose Sale Shift Scheduler: Design Doc
+
+Status: Draft for review · Approach: B (separate web app + Google Sheets API) · Date: 2026-11-09
+
+NOTE
+
+All names, IDs, committees, roles, dates and slot times in this doc are placeholders. Everything event-specific is read from the sheet's Config and Roster tabs at runtime, so swapping in real data needs no code changes.
+
+1. Goal
+
+Replace hand-filled shift tabs (FEB 9 Shifts … FEB 14 Shifts) with:
+
+A when2meet-style web app. A core member enters their ID number, drags across a grid to mark availability, and ranks their preferred roles.
+An auto-assigner that builds the best schedule it can, given availability, committee eligibility, headcount needs and fairness.
+Write-back of the schedule into the Google Sheet in the existing format ([COMMITTEE] First Last per cell), where admins can still edit by hand.
+Non-goals (v1)
+Shift swapping or trading between members
+Notifications (email/Discord) when the schedule is published
+Multiple concurrent events (the data model allows it; see §11)
+2. Architecture
+Layer	Choice	Why
+Framework	Next.js (App Router) + TypeScript	One repo for UI + API routes; free Vercel hosting
+UI	Tailwind + a custom drag-select grid component	when2meet-style UX, works on mobile with touch
+Validation	zod	One schema shared by the client, the API and sheet parsing
+Sheets access	googleapis with a service account	No per-user OAuth; the sheet is shared with the service account email
+Optimizer	highs (HiGHS solver compiled to WASM)	Real MILP solver that runs in a serverless function; handles this problem size in well under a second
+Admin auth	Passcode in an env var (v1) → Google sign-in allow-list (v2)	Starts simple and is easy to upgrade
+
+Key boundary: all sheet reads and writes go through a single SheetRepository interface (§6). If you later move to a database (approach C), you only replace this module.
+
+3. Google Sheet Layout
+
+Existing tabs (Instructions, Role Guide, FEB X Shifts) stay as they are. New tabs:
+
+3.1 Roster (source of identity)
+ID	First	Last	Committee	Active	MaxShiftsTotal	MaxShiftsPerDay
+1001	Andrew	Tan	PM	TRUE
+1002	John	Lee	LOG	TRUE	6	2
+1003	Denise	Placeholder	DOCPUB	TRUE
+ID is a string. Leading zeros and letters are allowed.
+Committee must match a code in Config › Committees.
+Blank caps → fall back to the defaults in Config › Settings.
+Active = FALSE hides the person from the form and the optimizer without deleting them.
+3.2 Config (one tab, several labelled blocks, or split into Cfg_* tabs)
+
+Splitting into separate tabs is simpler to parse and is the recommended option:
+
+Cfg_Settings (key/value)
+
+Key	Value	Notes
+EventName	Rose Sale 2026	Shown in the header
+Venue	SEC-C Foyer
+FormOpen	TRUE	Admin toggle; when FALSE the form becomes read-only
+DefaultMaxShiftsPerDay	3
+DefaultMaxShiftsTotal	8
+MaxConsecutiveSlots	2	Hard cap; 0 = no cap
+VerifyField	NONE	NONE / LAST_NAME / PIN. Second identity check, see §8
+W_Coverage / W_Pref1 / W_Pref2 / W_Pref3 / W_Eligible / W_Fairness	1000 / 30 / 20 / 10 / 0 / 5	Optimizer weights (§5)
+
+Cfg_Committees
+
+Code	Name	Colour
+PM	Project Managers	#cfe2f3
+LOG	Logistics	#fff2cc
+FLORIST	Florists	…
+SALES, EXREL, OPS, PROD, DOCPUB, CREATIVES, EBCB, DELIV, …
+
+Cfg_Roles (one row per column in the shift tabs, left to right)
+
+RoleKey	Label	Icon	AllowedCommittees	MinPerSlot	MaxPerSlot	SheetColumn
+SUPERVISOR	Overall Supervisor	💼	PM,OPS,EBCB,PROD,CREATIVES	2	3	C
+BLOOMBAR	Bloom Bar Florists	🌺	LOG,FLORIST,PROD,DOCPUB,CREATIVES	2	3	D
+FLORIST	Florists	🌻	LOG,FLORIST,PROD,DOCPUB,CREATIVES	2	3	E
+ENCODER	Encoders	💻	SALES,EXREL	1	2	F
+SALESREP	Sales Reps	🧾	SALES,EXREL	2	4	G
+SHOPKEEPER	Shopkeeper for Pick-ups	📞	LOG,EXREL	1	2	H
+SCRIBE	Scribes	✒️	SALES,OPS,EXREL,PROD,DOCPUB,CREATIVES	1	2	I
+ROVER	Rovers	🧭	*	1	2	J
+DOVE	Doves	🕊️	*	2	3	K
+* = all committees. The allowed-committee lists come from the colour legend at the top of the shift tabs. The values above are guesses, so please check them.
+SheetColumn tells the writer where each role goes, so adding or reordering roles only needs config edits.
+
+Cfg_Slots (one row per bookable block)
+
+SlotId	Date	Start	End	Label	Tab
+D1S1	2026-02-09	08:00	09:30	8:00 AM – 9:30 AM (Ingress)	FEB 9 Shifts
+D1S2	2026-02-09	09:30	11:00	9:30 AM – 11:00 AM	FEB 9 Shifts
+…
+Rows are explicit rather than generated, so different days can have different hours, and special slots (Ingress/Egress) are just labels.
+Tab is the output tab for that slot.
+
+Cfg_Overrides (optional per-slot exceptions; covers the blacked-out cells)
+
+SlotId	RoleKey	MinPerSlot	MaxPerSlot	Note
+D2S1	DOVE	0	0	No doves during ingress
+3.3 Responses (written by the app, can be hidden)
+
+One row per member, overwritten when they resubmit:
+
+ID	SubmittedAt	AvailableSlots	Pref1	Pref2	Pref3	Notes
+1002	2026-11-10T10:12:00+08:00	D1S1,D1S2,D2S3	BLOOMBAR	FLORIST	DOVE	can't do mornings Thu
+A comma-separated SlotId list keeps it to one row per person, which is simple to upsert and easy to read.
+When the same person submits twice, the upsert is protected so the second submission cleanly replaces the first (see §7).
+3.4 Assignments (written by the app; machine-readable copy of the result)
+RunId	SlotId	RoleKey	ID	Name	Committee	PrefRank	Locked
+The source of truth for "who is assigned where". The FEB X Shifts tabs are a formatted view generated from it.
+Locked = TRUE rows are kept as-is on re-runs (admin pins, §5.4).
+3.5 Unfilled (written by the app)
+SlotId	RoleKey	Needed	Filled	Short	EligibleButUnavailable
+4. Web App: Pages & UX
+4.1 / Member flow
+
+Availability grid
+
+Columns = dates, rows = slots (from Cfg_Slots). On mobile it switches to one day at a time with swipe tabs.
+Click and drag (mouse) or long-press then drag (touch) to toggle a range, as in when2meet.
+Pre-filled with previous answers if the member has already submitted.
+A small "group heat" overlay (number of people already available) can be turned on in Settings. Off by default.
+
+Role ranking
+
+Shows only the roles the member's committee is allowed to do, with their labels and icons.
+Pick 1st/2nd/3rd from dropdowns or a drag list. At least 1 is required and 3 is the maximum. The UI says these are preferences: "you may be placed in any role your committee is eligible for."
+4.2 /admin (passcode-protected)
+Panel	Purpose
+Responses	Who has and hasn't submitted (compared against active Roster), with a "copy missing names" button
+Heatmap	Slot × role grid showing how many eligible, available people there are vs MinPerSlot. Red cells = guaranteed shortfall before running the optimizer
+Run auto-assign	Runs the optimizer and shows a preview (same layout as the sheet) plus stats: coverage %, % who got their 1st choice, min/avg/max shifts per person
+Publish to sheet	Writes Assignments, Unfilled, and re-renders the FEB X Shifts tabs
+Settings	Form open/close toggle, re-read Config button (clears the cache)
+
+IMPORTANT
+
+Run and Publish are separate steps on purpose. Admins can re-run with different weights and compare results before anything in the sheet is overwritten.
+
+5. Auto-Assignment Engine
+5.1 Inputs (all from the sheet)
+People p (active Roster rows that have a Response), with committee c(p) and caps
+Slots s, roles r with min[s,r], max[s,r] (Roles + Overrides)
+avail[p,s] ∈ {0,1}, elig[p,r] = committee allowed for that role
+rank[p,r] ∈ {1,2,3, none}
+Locked assignments (§5.4)
+5.2 Model (Mixed-Integer Linear Program)
+
+Variables
+
+𝑥
+𝑝
+,
+𝑠
+,
+𝑟
+∈
+{
+0
+,
+1
+}
+x
+p,s,r
+	​
+
+∈{0,1}: person p works role r in slot s. Only created when avail[p,s]=1 and elig[p,r]=1, which removes most combinations and keeps the model small.
+𝑢
+𝑠
+,
+𝑟
+≥
+0
+u
+s,r
+	​
+
+≥0: shortfall below the minimum (allows a gap instead of making the problem unsolvable)
+𝐿
+max
+⁡
+,
+𝐿
+min
+⁡
+L
+max
+	​
+
+,L
+min
+	​
+
+: the most and fewest shifts given to any one person (for fairness)
+
+Hard constraints
+
+One role per person per slot:
+∑
+𝑟
+𝑥
+𝑝
+,
+𝑠
+,
+𝑟
+≤
+1
+∑
+r
+	​
+
+x
+p,s,r
+	​
+
+≤1
+Capacity:
+∑
+𝑝
+𝑥
+𝑝
+,
+𝑠
+,
+𝑟
+≤
+max
+𝑠
+,
+𝑟
+∑
+p
+	​
+
+x
+p,s,r
+	​
+
+≤max
+s,r
+	​
+
+Soft minimum:
+∑
+𝑝
+𝑥
+𝑝
+,
+𝑠
+,
+𝑟
++
+𝑢
+𝑠
+,
+𝑟
+≥
+min
+𝑠
+,
+𝑟
+∑
+p
+	​
+
+x
+p,s,r
+	​
+
++u
+s,r
+	​
+
+≥min
+s,r
+	​
+
+Per-day cap:
+∑
+𝑠
+∈
+𝑑
+∑
+𝑟
+𝑥
+𝑝
+,
+𝑠
+,
+𝑟
+≤
+MaxPerDay
+𝑝
+∑
+s∈d
+	​
+
+∑
+r
+	​
+
+x
+p,s,r
+	​
+
+≤MaxPerDay
+p
+	​
+
+Total cap:
+∑
+𝑠
+,
+𝑟
+𝑥
+𝑝
+,
+𝑠
+,
+𝑟
+≤
+MaxTotal
+𝑝
+∑
+s,r
+	​
+
+x
+p,s,r
+	​
+
+≤MaxTotal
+p
+	​
+
+Consecutive cap (if MaxConsecutiveSlots = k > 0): in any window of k+1 back-to-back slots on the same day,
+∑
+≤
+𝑘
+∑≤k
+Fairness bounds:
+𝐿
+min
+⁡
+≤
+load
+𝑝
+≤
+𝐿
+max
+⁡
+L
+min
+	​
+
+≤load
+p
+	​
+
+≤L
+max
+	​
+
+ for every person p (people who marked no availability are excluded)
+Locked rows:
+𝑥
+=
+1
+x=1 fixed
+
+Objective (maximize)
+
+−
+𝑊
+𝑐
+𝑜
+𝑣
+∑
+𝑠
+,
+𝑟
+𝑢
+𝑠
+,
+𝑟
++
+∑
+𝑝
+,
+𝑠
+,
+𝑟
+prefScore
+(
+𝑝
+,
+𝑟
+)
+𝑥
+𝑝
+,
+𝑠
+,
+𝑟
+−
+𝑊
+𝑓
+𝑎
+𝑖
+𝑟
+(
+𝐿
+max
+⁡
+−
+𝐿
+min
+⁡
+)
+−W
+cov
+	​
+
+s,r
+∑
+	​
+
+u
+s,r
+	​
+
++
+p,s,r
+∑
+	​
+
+prefScore(p,r)x
+p,s,r
+	​
+
+−W
+fair
+	​
+
+(L
+max
+	​
+
+−L
+min
+	​
+
+)
+
+where prefScore = W_Pref1 / W_Pref2 / W_Pref3 for ranked roles, otherwise W_Eligible (0 by default: allowed, but not rewarded).
+
+Because the default W_Coverage is much larger than any preference weight, filling a slot always beats giving someone their top choice. Fairness then breaks ties between equally good fills. All weights can be changed in Cfg_Settings.
+
+NOTE
+
+Coverage is a weighted soft constraint, not a hard rule. If a slot cannot be filled with available, eligible people, the solver still returns a schedule and reports the gap in Unfilled instead of failing.
+
+5.3 Size & performance
+
+Placeholder scale: ~80 people × 6 days × 8 slots × 9 roles is about 35k raw combinations. After filtering by availability and eligibility, typically under 8k variables, which HiGHS solves in well under a second. A 20 s time limit plus a "best found so far" fallback protects against Vercel's function timeout.
+
+Fallback: if the solver fails or times out, a deterministic greedy pass fills the scarcest slot × role first (fewest eligible available people), choosing the person with the highest preference score and fewest shifts so far. The result is marked "heuristic" in the admin preview.
+
+5.4 Admin pins & re-runs
+An admin can lock a cell in the preview. It's saved as Locked=TRUE in Assignments.
+Re-runs keep locked rows and re-optimize everything else, so manual tweaks survive a late submission.
+Edits made directly in the FEB X Shifts tabs are not read back in v1 (the tabs are only a view). The admin UI warns about this before publishing. Reading hand edits back in is Phase 4.
+5.5 Determinism
+
+People and slots are sorted by ID/SlotId before the model is built, so the same inputs always give the same schedule.
+
+6. Code Structure
+rose-shift-scheduler/
+├─ app/
+│  ├─ page.tsx                    # member flow
+│  ├─ admin/page.tsx              # admin dashboard
+│  └─ api/
+│     ├─ member/[id]/route.ts     # GET roster lookup + existing response
+│     ├─ responses/route.ts       # POST upsert availability + prefs
+│     ├─ config/route.ts          # GET public config (slots, roles, eligibility)
+│     └─ admin/
+│        ├─ heatmap/route.ts
+│        ├─ assign/route.ts       # POST run optimizer → preview (no writes)
+│        └─ publish/route.ts      # POST write Assignments/Unfilled/FEB tabs
+├─ lib/
+│  ├─ domain/types.ts             # Person, Slot, Role, Response, Assignment (zod)
+│  ├─ repo/SheetRepository.ts     # interface
+│  ├─ repo/GoogleSheetRepository.ts
+│  ├─ repo/InMemoryRepository.ts  # tests + local dev without Google
+│  ├─ optimizer/buildModel.ts     # inputs → LP
+│  ├─ optimizer/solve.ts          # HiGHS + greedy fallback
+│  ├─ writer/ScheduleWriter.ts    # assignments → FEB X tab grids
+│  └─ auth/admin.ts
+├─ components/AvailabilityGrid.tsx, RoleRanker.tsx, Heatmap.tsx, SchedulePreview.tsx
+└─ tests/
+
+SheetRepository interface
+
+ts
+interface SheetRepository {
+  getConfig(): Promise<EventConfig>;            // settings, committees, roles, slots, overrides
+  getRoster(): Promise<Person[]>;
+  getResponses(): Promise<Response[]>;
+  upsertResponse(r: Response): Promise<void>;
+  getAssignments(): Promise<Assignment[]>;      // incl. locked
+  writeAssignments(run: AssignmentRun): Promise<void>;
+  writeUnfilled(rows: UnfilledRow[]): Promise<void>;
+  renderShiftTabs(run: AssignmentRun, cfg: EventConfig): Promise<void>;
+}
+
+The optimizer and writer are pure functions ((inputs) => outputs) with no I/O, so they can be fully unit-tested.
+
+7. Sheet Write-Back (FEB X Shifts tabs)
+
+The existing tabs have a fixed visual layout: role columns C–K, several rows per slot, merged time cells in column B. To fill them correctly, the writer needs to know where each slot block starts.
+
+Layout mapping: add 2 columns to Cfg_Slots:
+
+…	Tab	StartRow	RowCount
+…	FEB 10 Shifts	13	4
+
+The writer then, for each slot:
+
+Clears SheetColumn{StartRow}:{StartRow+RowCount-1} for every role column (values only, so colours, borders and merges stay).
+Writes the assigned people top to bottom as [COMMITTEE] First Last, sorted by committee then name.
+If assignments exceed RowCount, it puts the extra names in the last cell separated by line breaks and logs a warning in Unfilled.
+
+All writes are batched into one spreadsheets.values.batchUpdate call per publish to stay within API quotas.
+
+TIP
+
+Alternative for later: have the writer generate each day tab from a template tab (_Template Shifts) instead of writing into hand-built ones. Then adding a day = adding rows in Cfg_Slots. Phase 4.
+
+Concurrency on Responses:
+
+Upsert = read the ID column → find the row → values.update the row, or values.append if the person is new.
+A short in-function retry plus a SubmittedAt compare-and-set guards against two submissions at the same moment. That's enough for roughly 100 members. If it ever isn't, move responses to a database (§11).
+8. Identity, Security & Privacy
+Risk	Mitigation
+Someone enters another member's ID	VerifyField setting: LAST_NAME (case-insensitive) or PIN (a PIN column in Roster). Default is NONE while you're on placeholders; turn it on before the real launch
+ID enumeration	Rate-limit /api/member/[id] per IP. The lookup only returns first name + committee until verification passes
+Admin access	ADMIN_PASSCODE env var → signed httpOnly cookie. Upgrade path: Google sign-in with an email allow-list
+Service account key leak	Key kept only in Vercel env vars, never sent to the client. The service account has Editor access to this one sheet only
+Editing after the deadline	FormOpen=FALSE makes the API reject writes, not just hide the UI
+Privacy	No public view of other members' availability. The heat overlay shows counts only
+9. Edge Cases
+Case	Behaviour
+ID not found / inactive	"ID not found, contact your PM" message; nothing is created
+Member's committee isn't eligible for any role	Shown "No roles available for [COMMITTEE]". Can still submit availability (helps the admin see who's free)
+Member selects zero slots	Allowed (counts as "not available"). Excluded from the fairness bounds
+Config edited after responses exist	Responses that mention deleted SlotIds are ignored with a warning in the admin view; new slots show as "no data yet"
+Committee code typo in Roster/Roles	Config validation on load lists the bad rows in the admin dashboard; the optimizer won't run until they're fixed
+Role with Min > Max, or overrides referencing an unknown slot	Same: validation error, no run
+Total demand > total supply	Solver still returns a schedule; shortfalls go to Unfilled and the heatmap
+10. Testing
+Unit: buildModel (eligibility/availability filtering, caps, locks), the greedy fallback, ScheduleWriter cell layout, zod parsing of each Config tab including the bad-data cases above.
+Property tests: for random small instances, check that every assignment is available, eligible, within capacity and one-per-slot, and that results are deterministic.
+Integration: InMemoryRepository seeded with placeholder Roster/Config, running the full member submit → assign → publish flow.
+Manual staging: a copy of the sheet shared with the service account; SHEET_ID env var points to the copy until launch.
+11. Expandability (built for placeholders)
+Future change	What you do
+Real roster / roles / dates	Edit Roster and Cfg_* tabs. No code change
+Add a role column	Add a row in Cfg_Roles + a column in the shift tabs
+Different slot lengths per day	Edit Cfg_Slots rows
+New fairness / preference rules	Add a weight key in Cfg_Settings + one term in buildModel
+Multiple events (e.g. Rose Sale + another)	Add an EventId column / one sheet per event, selected via the ?event= URL param → SHEET_ID lookup
+Outgrow Sheets (concurrency, history)	Implement SupabaseRepository or ConvexRepository. Keep the sheet as an export by calling only renderShiftTabs
+Notify members	After publish, read Assignments → send email or Discord messages (Phase 4)
+12. Delivery Phases
+Phase	Scope	Done when
+0. Sheet prep	Add Roster, Cfg_*, Responses, Assignments, Unfilled tabs with placeholders; create service account; share sheet	Config tabs validate cleanly
+1. Member form	ID lookup, availability grid, role ranking, upsert to Responses	3 test members can submit/edit from phone + desktop
+2. Admin + optimizer	Responses panel, heatmap, run → preview with stats, locks	Placeholder data produces a valid preview in < 5 s
+3. Publish	Assignments, Unfilled, write into FEB X Shifts via layout mapping	Output matches current tab format on the staging copy
+4. Polish (optional)	Template-generated tabs, reading hand edits back in, notifications, Google sign-in for admins	—
+13. Open Questions (please confirm)
+Committee → role eligibility: are the AllowedCommittees in §3.2 right? They're my reading of the colour legend.
+Headcounts: what min/max per role per slot? (The current tabs show about 2–4 rows per cell.)
+Caps: default max shifts per day / total, and whether to enforce a consecutive-slot limit.
+Who counts as "core"? Should PMs / Committee Heads go through the form too, or be pre-assigned with locks (e.g. Overall Supervisor)?
+Identity check: OK to launch with LAST_NAME verification, or do you want PINs?
+Hand edits: is it acceptable in v1 that re-publishing overwrites manual edits made directly in the shift tabs (pins in the admin UI are kept)?

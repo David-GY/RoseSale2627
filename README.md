@@ -1,5 +1,9 @@
 # RoseSale2627
 
+## Shift scheduler
+
+The separate [Rose Sale shift scheduler](scheduler/README.md) provides member availability, role preferences, automatic assignment, admin previews/pins and Google Sheets publication. Run it from `scheduler/` on port 3010. Demo member: `1001`; demo organizer passcode: `rose-demo`. The cashier app below keeps its existing setup.
+
 The original Rose Sale cashier app, with sample products and PHP prices from the [RS '26 Encoder Sheet](https://docs.google.com/spreadsheets/d/1mb7eJ-7299Y3cxkLVZiVi4NxG-SGuPZN3YndVxySVI4/edit?gid=1042576733#gid=1042576733).
 
 Live sample: https://rose-sale-sample.vercel.app/

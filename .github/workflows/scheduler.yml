@@ -1,0 +1,26 @@
+name: Scheduler checks
+on:
+  push:
+    paths: ['scheduler/**', '.github/workflows/scheduler.yml']
+  pull_request:
+    paths: ['scheduler/**', '.github/workflows/scheduler.yml']
+jobs:
+  scheduler:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scheduler
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: scheduler/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm typecheck
+      - run: pnpm build
