@@ -1,0 +1,97 @@
+export const fixture = () =>
+  ({
+    config: {
+      settings: {
+        eventName: "Test Roses",
+        venue: "Foyer",
+        formOpen: true,
+        verifyField: "NONE",
+        defaultMaxShiftsPerDay: 2,
+        defaultMaxShiftsTotal: 3,
+        maxConsecutiveSlots: 1,
+        weights: { pref1: 30, pref2: 20, pref3: 10, eligible: 0, fairness: 5 },
+      },
+      committees: [
+        { code: "LOG", name: "Logistics", colour: "#fff2cc" },
+        { code: "SALES", name: "Sales", colour: "#ffddee" },
+      ],
+      roles: [
+        {
+          key: "FLOWER",
+          label: "Florists",
+          icon: "✿",
+          allowed: ["LOG"],
+          min: 1,
+          max: 1,
+          column: "C",
+        },
+        {
+          key: "ROVER",
+          label: "Rovers",
+          icon: "↗",
+          allowed: ["*"],
+          min: 1,
+          max: 1,
+          column: "D",
+        },
+      ],
+      slots: [
+        {
+          id: "S1",
+          date: "2027-02-09",
+          start: "08:00",
+          end: "09:00",
+          label: "Morning",
+          tab: "FEB 9 Shifts",
+          startRow: 13,
+          rowCount: 2,
+        },
+        {
+          id: "S2",
+          date: "2027-02-09",
+          start: "09:00",
+          end: "10:00",
+          label: "Late morning",
+          tab: "FEB 9 Shifts",
+          startRow: 15,
+          rowCount: 2,
+        },
+      ],
+      overrides: [],
+    },
+    roster: [
+      { id: "001", first: "Ana", last: "Tan", committee: "LOG", active: true },
+      {
+        id: "002",
+        first: "Ben",
+        last: "Lee",
+        committee: "SALES",
+        active: true,
+      },
+      { id: "003", first: "Cara", last: "Yu", committee: "LOG", active: true },
+    ],
+    responses: [
+      {
+        id: "001",
+        submittedAt: "2026-11-10T00:00:00Z",
+        availableSlots: ["S1", "S2"],
+        preferences: ["FLOWER"],
+        notes: "",
+      },
+      {
+        id: "002",
+        submittedAt: "2026-11-10T00:00:00Z",
+        availableSlots: ["S1", "S2"],
+        preferences: ["ROVER"],
+        notes: "",
+      },
+      {
+        id: "003",
+        submittedAt: "2026-11-10T00:00:00Z",
+        availableSlots: ["S1", "S2"],
+        preferences: ["FLOWER"],
+        notes: "",
+      },
+    ],
+    assignments: [],
+  }) as any;
