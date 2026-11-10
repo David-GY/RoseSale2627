@@ -96,6 +96,7 @@ export const responseSchema = z.object({
 export type MemberResponse = z.infer<typeof responseSchema>;
 export type Snapshot = {
   config: Config;
+  disabledSlots?: Config["slots"];
   roster: Person[];
   responses: MemberResponse[];
   assignments: Assignment[];
@@ -144,12 +145,14 @@ export function validateSnapshot(input: unknown): Snapshot {
   const s = z
     .object({
       config: configSchema,
+      disabledSlots: z.array(configSchema.shape.slots.element).optional(),
       roster: z.array(personSchema).max(1000),
       responses: z.array(responseSchema),
       assignments: z.array(assignmentSchema),
     })
     .parse(input);
-  const c = s.config;
+  const c = s.config,
+    allSlots = [...c.slots, ...(s.disabledSlots ?? [])];
   unique(
     c.committees.map((x) => x.code),
     "committee",
@@ -159,7 +162,7 @@ export function validateSnapshot(input: unknown): Snapshot {
     "role",
   );
   unique(
-    c.slots.map((x) => x.id),
+    allSlots.map((x) => x.id),
     "slot",
   );
   unique(
@@ -201,11 +204,11 @@ export function validateSnapshot(input: unknown): Snapshot {
     "Assignments",
     "Unfilled",
   ];
-  for (const a of c.slots) {
+  for (const a of allSlots) {
     if (a.start >= a.end) throw Error("Slot must end after start: " + a.id);
     if (reserved.includes(a.tab))
       throw Error("Output tab conflicts with data tab");
-    for (const b of c.slots)
+    for (const b of allSlots)
       if (
         a.id !== b.id &&
         a.tab === b.tab &&

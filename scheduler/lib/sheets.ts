@@ -134,7 +134,7 @@ export function parseTables(tables: Tables): Snapshot {
       note: x.Note,
     })),
   };
-  return validateSnapshot({
+  const snapshot = validateSnapshot({
     config,
     roster: records(tables, "Roster", [
       "ID",
@@ -144,20 +144,28 @@ export function parseTables(tables: Tables): Snapshot {
       "Active",
       "MaxShiftsTotal",
       "MaxShiftsPerDay",
-    ]).map((x) => ({
-      id: x.ID,
-      first: x.First,
-      last: x.Last,
-      committee: x.Committee,
-      active: bool(x.Active, "Active"),
-      ...(x.PIN ? { pin: x.PIN } : {}),
-      ...(x.MaxShiftsTotal !== ""
-        ? { maxShiftsTotal: number(x.MaxShiftsTotal) }
-        : {}),
-      ...(x.MaxShiftsPerDay !== ""
-        ? { maxShiftsPerDay: number(x.MaxShiftsPerDay) }
-        : {}),
-    })),
+    ])
+      .filter((row) =>
+        ["ID", "First", "Last", "Committee", "Active", "MaxShiftsTotal", "MaxShiftsPerDay", "PIN"].some(
+          (field) =>
+            (row[field] ?? "") !== "" &&
+            !(field === "Active" && row[field].toUpperCase() === "FALSE"),
+        ),
+      )
+      .map((x) => ({
+        id: x.ID,
+        first: x.First,
+        last: x.Last,
+        committee: x.Committee,
+        active: bool(x.Active, "Active"),
+        ...(x.PIN ? { pin: x.PIN } : {}),
+        ...(x.MaxShiftsTotal !== ""
+          ? { maxShiftsTotal: number(x.MaxShiftsTotal) }
+          : {}),
+        ...(x.MaxShiftsPerDay !== ""
+          ? { maxShiftsPerDay: number(x.MaxShiftsPerDay) }
+          : {}),
+      })),
     responses: latestResponses(
       records(tables, "Responses", [
         "ID",
@@ -191,6 +199,19 @@ export function parseTables(tables: Tables): Snapshot {
       locked: bool(x.Locked, "Locked"),
     })),
   });
+  const disabledIds = new Set(
+    records(tables, "Cfg_Slots")
+      .filter((row) => row.Enabled !== undefined && row.Enabled !== "" && !bool(row.Enabled, "Enabled for " + row.SlotId))
+      .map((row) => row.SlotId),
+  );
+  if (disabledIds.size) {
+    snapshot.disabledSlots = snapshot.config.slots.filter((slot) => disabledIds.has(slot.id));
+    snapshot.config.slots = snapshot.config.slots.filter((slot) => !disabledIds.has(slot.id));
+    snapshot.config.overrides = snapshot.config.overrides.filter((row) => !disabledIds.has(row.slotId));
+    snapshot.assignments = snapshot.assignments.filter((row) => !disabledIds.has(row.slotId));
+  }
+  if (!snapshot.config.slots.length) throw Error("Enable at least one shift in Shift Setup.");
+  return snapshot;
 }
 export class GoogleSheetRepository implements SheetRepository {
   readonly mode = "sheets" as const;
@@ -416,7 +437,7 @@ export class GoogleSheetRepository implements SheetRepository {
     );
     const rendered = renderShiftTabs(run.assignments, s);
     let i = 0;
-    for (const slot of s.config.slots)
+    for (const slot of [...s.config.slots, ...(s.disabledSlots ?? [])])
       for (const role of s.config.roles)
         cells(
           slot.tab,
