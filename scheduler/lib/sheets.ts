@@ -144,20 +144,28 @@ export function parseTables(tables: Tables): Snapshot {
       "Active",
       "MaxShiftsTotal",
       "MaxShiftsPerDay",
-    ]).map((x) => ({
-      id: x.ID,
-      first: x.First,
-      last: x.Last,
-      committee: x.Committee,
-      active: bool(x.Active, "Active"),
-      ...(x.PIN ? { pin: x.PIN } : {}),
-      ...(x.MaxShiftsTotal !== ""
-        ? { maxShiftsTotal: number(x.MaxShiftsTotal) }
-        : {}),
-      ...(x.MaxShiftsPerDay !== ""
-        ? { maxShiftsPerDay: number(x.MaxShiftsPerDay) }
-        : {}),
-    })),
+    ])
+      .filter((row) =>
+        Object.entries(row).some(
+          ([field, value]) =>
+            value !== "" &&
+            !(field === "Active" && value.toUpperCase() === "FALSE"),
+        ),
+      )
+      .map((x) => ({
+        id: x.ID,
+        first: x.First,
+        last: x.Last,
+        committee: x.Committee,
+        active: bool(x.Active, "Active"),
+        ...(x.PIN ? { pin: x.PIN } : {}),
+        ...(x.MaxShiftsTotal !== ""
+          ? { maxShiftsTotal: number(x.MaxShiftsTotal) }
+          : {}),
+        ...(x.MaxShiftsPerDay !== ""
+          ? { maxShiftsPerDay: number(x.MaxShiftsPerDay) }
+          : {}),
+      })),
     responses: latestResponses(
       records(tables, "Responses", [
         "ID",

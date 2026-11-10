@@ -10,6 +10,20 @@ function tables() {
     ]),
   );
 }
+it("ignores unused roster rows containing only unchecked checkboxes", () => {
+  const t = tables();
+  t.Roster.push(["", "", "", "", "FALSE", "", "", "", "", ""]);
+  t.Roster.push(["", "", "", "", "false", "", "", "", "", ""]);
+  expect(parseTables(t).roster.map((p) => p.id)).toEqual(["001", "002", "003"]);
+});
+it("still rejects incomplete roster rows with member data or checked Active", () => {
+  const t = tables();
+  t.Roster.push(["", "Incomplete", "", "", "FALSE", "", "", ""]);
+  expect(() => parseTables(t)).toThrow();
+  const u = tables();
+  u.Roster.push(["", "", "", "", "TRUE", "", "", ""]);
+  expect(() => parseTables(u)).toThrow();
+});
 it("parses template configuration, preserves text IDs and applies default caps", () => {
   const s = parseTables(tables());
   expect(s.roster[0].id).toBe("001");
