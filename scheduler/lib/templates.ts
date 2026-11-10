@@ -55,6 +55,7 @@ export function templateTables(
         "Tab",
         "StartRow",
         "RowCount",
+        "Enabled",
       ],
       ...c.slots.map((x) => [
         x.id,
@@ -65,6 +66,7 @@ export function templateTables(
         x.tab,
         x.startRow,
         x.rowCount,
+        true,
       ]),
     ],
     Cfg_Overrides: [

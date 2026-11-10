@@ -134,7 +134,7 @@ export function parseTables(tables: Tables): Snapshot {
       note: x.Note,
     })),
   };
-  return validateSnapshot({
+  const snapshot = validateSnapshot({
     config,
     roster: records(tables, "Roster", [
       "ID",
@@ -199,6 +199,19 @@ export function parseTables(tables: Tables): Snapshot {
       locked: bool(x.Locked, "Locked"),
     })),
   });
+  const disabledIds = new Set(
+    records(tables, "Cfg_Slots")
+      .filter((row) => row.Enabled !== undefined && row.Enabled !== "" && !bool(row.Enabled, "Enabled for " + row.SlotId))
+      .map((row) => row.SlotId),
+  );
+  if (disabledIds.size) {
+    snapshot.disabledSlots = snapshot.config.slots.filter((slot) => disabledIds.has(slot.id));
+    snapshot.config.slots = snapshot.config.slots.filter((slot) => !disabledIds.has(slot.id));
+    snapshot.config.overrides = snapshot.config.overrides.filter((row) => !disabledIds.has(row.slotId));
+    snapshot.assignments = snapshot.assignments.filter((row) => !disabledIds.has(row.slotId));
+  }
+  if (!snapshot.config.slots.length) throw Error("Enable at least one shift in Shift Setup.");
+  return snapshot;
 }
 export class GoogleSheetRepository implements SheetRepository {
   readonly mode = "sheets" as const;
@@ -424,7 +437,7 @@ export class GoogleSheetRepository implements SheetRepository {
     );
     const rendered = renderShiftTabs(run.assignments, s);
     let i = 0;
-    for (const slot of s.config.slots)
+    for (const slot of [...s.config.slots, ...(s.disabledSlots ?? [])])
       for (const role of s.config.roles)
         cells(
           slot.tab,

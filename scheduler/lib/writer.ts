@@ -2,7 +2,7 @@ import { type Snapshot, type Assignment } from "./domain";
 export function renderShiftTabs(assignments: Assignment[], s: Snapshot) {
   const cells: { range: string; values: string[][] }[] = [],
     warnings: string[] = [];
-  for (const slot of s.config.slots)
+  for (const slot of [...s.config.slots, ...(s.disabledSlots ?? [])])
     for (const role of s.config.roles) {
       const names = assignments
         .filter((a) => a.slotId === slot.id && a.roleKey === role.key)

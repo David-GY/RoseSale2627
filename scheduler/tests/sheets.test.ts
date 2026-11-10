@@ -2,6 +2,7 @@ import { it, expect } from "vitest";
 import { parseTables } from "../lib/sheets";
 import { templateTables } from "../lib/templates";
 import { fixture } from "./fixture";
+import { renderShiftTabs } from "../lib/writer";
 function tables() {
   return Object.fromEntries(
     Object.entries(templateTables(fixture())).map(([k, rows]) => [
@@ -30,6 +31,33 @@ it("ignores reference notes and targets on cleared roster rows", () => {
   t.Roster.push(["", "", "", "", "FALSE", "", "", "", "15", "Reference only"]);
   t.Roster.push(["", "", "", "", "", "", "", "", "", "Test only"]);
   expect(parseTables(t).roster.map((p) => p.id)).toEqual(["001", "002", "003"]);
+});
+it("excludes disabled shifts, their overrides and published pins but clears their output", () => {
+  const t = tables();
+  const enabled = t.Cfg_Slots[0].indexOf("Enabled");
+  t.Cfg_Slots[1][enabled] = "FALSE";
+  t.Cfg_Slots[2][enabled] = "TRUE";
+  t.Cfg_Overrides.push(["S1", "FLOWER", "0", "0", "Closed"]);
+  t.Assignments.push(["old", "S1", "FLOWER", "001", "A", "PM", "1", "TRUE"]);
+  const s = parseTables(t);
+  expect(s.config.slots.map((slot) => slot.id)).toEqual(["S2"]);
+  expect(s.disabledSlots?.map((slot) => slot.id)).toEqual(["S1"]);
+  expect(s.config.overrides).toEqual([]);
+  expect(s.assignments).toEqual([]);
+  const output = renderShiftTabs([], s);
+  expect(output.cells).toHaveLength(4);
+  expect(output.cells.every((c) => c.values.every((row) => row[0] === ""))).toBe(true);
+});
+it("accepts older slot tables without Enabled and rejects malformed toggles", () => {
+  const t = tables();
+  for (const row of t.Cfg_Slots) row.pop();
+  expect(parseTables(t).config.slots).toHaveLength(2);
+  const u = tables();
+  u.Cfg_Slots[1][8] = "yes";
+  expect(() => parseTables(u)).toThrow(/Enabled/);
+  u.Cfg_Slots[1][8] = "FALSE";
+  u.Cfg_Slots[2][8] = "FALSE";
+  expect(() => parseTables(u)).toThrow(/Enable at least one shift/);
 });
 it("parses template configuration, preserves text IDs and applies default caps", () => {
   const s = parseTables(tables());
