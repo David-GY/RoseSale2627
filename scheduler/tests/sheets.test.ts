@@ -24,6 +24,13 @@ it("still rejects incomplete roster rows with member data or checked Active", ()
   u.Roster.push(["", "", "", "", "TRUE", "", "", ""]);
   expect(() => parseTables(u)).toThrow();
 });
+it("ignores reference notes and targets on cleared roster rows", () => {
+  const t = tables();
+  t.Roster[0].push("ReferenceMinShifts", "SetupNotes");
+  t.Roster.push(["", "", "", "", "FALSE", "", "", "", "15", "Reference only"]);
+  t.Roster.push(["", "", "", "", "", "", "", "", "", "Test only"]);
+  expect(parseTables(t).roster.map((p) => p.id)).toEqual(["001", "002", "003"]);
+});
 it("parses template configuration, preserves text IDs and applies default caps", () => {
   const s = parseTables(tables());
   expect(s.roster[0].id).toBe("001");

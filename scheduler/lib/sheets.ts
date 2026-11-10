@@ -146,10 +146,10 @@ export function parseTables(tables: Tables): Snapshot {
       "MaxShiftsPerDay",
     ])
       .filter((row) =>
-        Object.entries(row).some(
-          ([field, value]) =>
-            value !== "" &&
-            !(field === "Active" && value.toUpperCase() === "FALSE"),
+        ["ID", "First", "Last", "Committee", "Active", "MaxShiftsTotal", "MaxShiftsPerDay", "PIN"].some(
+          (field) =>
+            (row[field] ?? "") !== "" &&
+            !(field === "Active" && row[field].toUpperCase() === "FALSE"),
         ),
       )
       .map((x) => ({
